@@ -2,33 +2,53 @@ import os
 import discord
 from discord.ext import commands
 
+# Enable necessary bot intents
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guilds = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-class MiddlemanModal(discord.ui.Modal, title="Middleman Request Form"):
-    other_trader = discord.ui.TextInput(
-        label="Other traders User/id",
-        placeholder="e.g. @Username or User ID",
-        required=True,
-        style=discord.TextStyle.short
-    )
-    your_trade = discord.ui.TextInput(
-        label="Your part of the trade",
-        placeholder="Describe what you are giving...",
-        required=True,
-        style=discord.TextStyle.paragraph
-    )
-    their_trade = discord.ui.TextInput(
-        label="Their part of the trade",
-        placeholder="Describe what they are giving...",
-        required=True,
-        style=discord.TextStyle.paragraph
-    )
+# In-memory storage for vouches (Resets on restart; use a database for persistence)
+vouch_counts = {}
 
-    async def on_submit(self, interaction: discord.Interaction):
+# ---------------------------------------------------------
+# UI Views (Tickets & Middleman)
+# ---------------------------------------------------------
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📩 Create Ticket", style=discord.ButtonStyle.primary, custom_id="create_ticket_btn")
+    async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        user = interaction.user
+        
+        # Check if ticket already exists
+        channel_name = f"ticket-{user.name.lower()}"
+        existing = discord.utils.get(guild.text_channels, name=channel_name)
+        if existing:
+            await interaction.response.send_message(f"❌ You already have an open ticket: {existing.mention}", ephemeral=True)
+            return
+
+        # Permissions: Only user and admins can see the channel
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+
+        channel = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
+        await channel.send(f"👋 Hello {user.mention}, welcome to your support ticket! An admin will be with you shortly.")
+        await interaction.response.send_message(f"✅ Ticket created: {channel.mention}", ephemeral=True)
+
+
+class MiddlemanView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🤝 Request Middleman", style=discord.ButtonStyle.success, custom_id="req_mm_btn")
+    async def request_mm(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         user = interaction.user
 
@@ -38,92 +58,88 @@ class MiddlemanModal(discord.ui.Modal, title="Middleman Request Form"):
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
 
-        channel_name = f"mm-{user.name}".lower().replace(" ", "-")
-        ticket_channel = await guild.create_text_channel(
-            name=channel_name,
-            overwrites=overwrites,
-            reason=f"Middleman request by {user}"
-        )
+        channel = await guild.create_text_channel(name=f"mm-{user.name.lower()}", overwrites=overwrites)
+        await channel.send(f"🤝 Middleman Request by {user.mention}.\nPlease state the details of the deal (users involved, items/amount).")
+        await interaction.response.send_message(f"✅ Middleman ticket opened: {channel.mention}", ephemeral=True)
 
-        ticket_embed = discord.Embed(
-            title="🎮 Middleman Request Received",
-            color=discord.Color.purple()
-        )
-        ticket_embed.add_field(name="Requestor", value=user.mention, inline=False)
-        ticket_embed.add_field(name="Other Trader User/ID", value=self.other_trader.value, inline=False)
-        ticket_embed.add_field(name="Your Part of Trade", value=self.your_trade.value, inline=False)
-        ticket_embed.add_field(name="Their Part of Trade", value=self.their_trade.value, inline=False)
 
-        await ticket_channel.send(
-            content=f"{user.mention} Welcome! A verified Middleman will be with you shortly.",
-            embed=ticket_embed
-        )
+# ---------------------------------------------------------
+# Bot Events & Commands
+# ---------------------------------------------------------
+@bot.event
+async def setup_hook():
+    # Register persistent views for buttons so they work after bot restarts
+    bot.add_view(TicketView())
+    bot.add_view(MiddlemanView())
 
-        await interaction.response.send_message(
-            f"✅ Ticket created successfully! Go to {ticket_channel.mention}",
-            ephemeral=True
-        )
-
-class PanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Request a Middleman",
-        style=discord.ButtonStyle.primary,
-        emoji="💎",
-        custom_id="mm_request_button"
-    )
-    async def request_mm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(MiddlemanModal())
 
 @bot.event
 async def on_ready():
-    bot.add_view(PanelView())
-    print(f"Bot connected as {bot.user}")
+    print(f"✅ Logged in successfully as {bot.user} (ID: {bot.user.id})")
 
-@bot.command()
+
+@bot.command(name="setup_ticket")
 @commands.has_permissions(administrator=True)
-async def sendpanel(ctx):
-    description = (
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "REQUEST A MIDDLEMAN · TRADE SAFELY\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Trade with complete confidence. Our verified Middlemen ensure every deal is completed safely, fairly, and scam-free.\n\n"
-        "**✦ How It Works**\n"
-        "Find a trade partner and agree on terms first\n"
-        "Click 💎 Request a Middleman below\n"
-        "Select who you're trading with & describe the deal\n"
-        "A verified MM joins and holds all assets securely\n"
-        "Both sides confirm → MM releases the trade ✅\n\n"
-        "**✦ Fee Structure**\n"
-        "💳 In-game items — 2% of total trade value\n"
-        "💵 Real money trades — 1% of total trade value\n\n"
-        "**✦ What Is a Middleman?**\n"
-        "A Middleman (MM) is a trusted, verified staff member who facilitates trades between two parties. They hold items, accounts, or payments and only release them once both parties confirm the trade is complete.\n\n"
-        "**✦ How Does a Middleman Work?**\n"
-        "1️⃣ Buyer & Seller agree to use MM\n"
-        "2️⃣ Seller gives item/account to MM\n"
-        "3️⃣ Buyer sends payment to MM\n"
-        "4️⃣ MM verifies everything & finalises the trade\n\n"
-        "**✦ Why Choose Our Service?**\n"
-        "🛡️ Scam-proof — assets held until both sides confirm\n"
-        "🤝 Fair & transparent — every step is documented\n"
-        "⭐ Community-trusted — verified by our staff team\n"
-        "⚡ Fast — experienced MMs ready to assist"
-    )
-
+async def setup_ticket(ctx):
+    """Sends the Ticket creation panel."""
     embed = discord.Embed(
-        title="🎮 Verified Middleman Service",
-        description=description,
-        color=discord.Color.from_rgb(114, 137, 218)
+        title="🎫 Support Tickets",
+        description="Click the button below to open a private ticket with staff.",
+        color=discord.Color.blue()
     )
+    await ctx.send(embed=embed, view=TicketView())
 
-    await ctx.send(embed=embed, view=PanelView())
 
-token = os.getenv(MTU0MzQ4NTg5OTU4MzUyNDkyNA.GQrouk.8hFcf6Sk0b0dNoc-vz69jobg62HUiKP_EDL0MQ)
-if not token:
-    raise ValueError("DISCORD_TOKEN environment variable is missing!")
+@bot.command(name="setup_mm")
+@commands.has_permissions(administrator=True)
+async def setup_mm(ctx):
+    """Sends the Middleman request panel."""
+    embed = discord.Embed(
+        title="🤝 Middleman Services",
+        description="Click below to request an official middleman for a deal.",
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed, view=MiddlemanView())
 
-bot.run(token)
-      
+
+@bot.command(name="vouch")
+async def vouch(ctx, user: discord.Member, *, reason: str = "No reason provided"):
+    """Auto-vouch system command: !vouch @user reason"""
+    if user.id == ctx.author.id:
+        await ctx.send("❌ You cannot vouch for yourself!")
+        return
+
+    vouch_counts[user.id] = vouch_counts.get(user.id, 0) + 1
+    await ctx.send(f"✅ **+1 Vouch** added to {user.mention}! (Total Vouches: **{vouch_counts[user.id]}**)\n*Reason:* {reason}")
+
+
+@bot.command(name="vouches")
+async def check_vouches(ctx, user: discord.Member = None):
+    """Check how many vouches a user has."""
+    target = user or ctx.author
+    count = vouch_counts.get(target.id, 0)
+    await ctx.send(f"⭐ {target.mention} has **{count}** vouch(es).")
+
+
+@bot.command(name="close")
+async def close_ticket(ctx):
+    """Closes and deletes a ticket or middleman channel."""
+    if ctx.channel.name.startswith("ticket-") or ctx.channel.name.startswith("mm-"):
+        await ctx.send("🔒 Closing this channel in 5 seconds...")
+        import asyncio
+        await asyncio.sleep(5)
+        await ctx.channel.delete()
+    else:
+        await ctx.send("❌ This command can only be used inside a ticket channel.")
+
+
+# ---------------------------------------------------------
+# Start Bot
+# ---------------------------------------------------------
+if __name__ == "__main__":
+    TOKEN = os.getenv("DISCORD_TOKEN")
+    if TOKEN:
+        bot.run(TOKEN)
+    else:
+        print("❌ ERROR: DISCORD_TOKEN environment variable is missing!")
+        
